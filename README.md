@@ -49,3 +49,7 @@ You can now execute your program like this:
 ```sh
 mydocker run ubuntu:latest /usr/local/bin/docker-explorer echo hey
 ```
+To run the final project 
+```sh
+mydocker run alpine:latest /bin/echo hello woooorld
+```
