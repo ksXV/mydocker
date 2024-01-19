@@ -53,4 +53,4 @@ To run the final project
 ```sh
 mydocker run alpine:latest /bin/echo hello woooorld
 ```
-NOTE: For some reason ubuntu doesn't work run alpine.
+NOTE: For some reason ubuntu doesn't work you should try to pull other images (ex.: alpine).
