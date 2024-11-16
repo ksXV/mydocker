@@ -54,3 +54,4 @@ To run the final project
 mydocker run alpine:latest /bin/echo hello woooorld
 ```
 NOTE: For some reason ubuntu doesn't work you should try to pull other images (ex.: alpine).
+NOTE x2: The project might not work because for some reason opencontainers decided to change their JSON schema...

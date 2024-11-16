@@ -16,12 +16,6 @@ import (
 type DockerManifest struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	MediaType     string `json:"mediaType"`
-	Config        struct {
-		MediaType string `json:"mediaType"`
-		Size      int    `json:"size"`
-		Digest    string `json:"digest"`
-	} `json:"config"`
-
 	Layers []struct {
 		MediaType string `json:"mediaType"`
 		Size      int    `json:"size"`
@@ -35,35 +29,29 @@ const (
 	layerUrl    = "https://registry.hub.docker.com/v2/library/%s/blobs/%s"
 )
 
-// copy a file from source path to destination path while preserving the file permissions
 func copyFile(src string, dest string) error {
-	//open the source file for reading
 	srcFile, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer srcFile.Close()
 
-	//Ensure directory for destination file exists,creating it with property permissions
 	err = os.MkdirAll(filepath.Dir(dest), 0755)
 	if err != nil {
 		return err
 	}
 
-	//Create the destination file for writing
 	destFile, err := os.Create(dest)
 	if err != nil {
 		return err
 	}
 	defer destFile.Close()
 
-	//copy the content from src file to dest file
 	_, err = io.Copy(destFile, srcFile)
 	if err != nil {
 		return err
 	}
 
-	//Retrieve the file mode of source file
 	srcInfo, err := srcFile.Stat()
 	if err != nil {
 		return err
@@ -72,7 +60,6 @@ func copyFile(src string, dest string) error {
 	err = destFile.Chmod(srcInfo.Mode())
 	if err != nil {
 		return err
-
 	}
 
 	return nil
@@ -90,40 +77,89 @@ func createFile(number int, contents io.ReadCloser) (*os.File, error) {
 	return file, nil
 }
 
-func extractTar(filename, dest string) {
+func extractTar(filename, dest string) error {
 	cmd := exec.Command("tar", "xzf", filename, "-C", dest)
 	err := cmd.Run()
 	if err != nil {
-		log.Fatalln(err.Error())
+        return err
 	}
-	// Remove the tar file after extraction
 	err = os.Remove(filename)
 	if err != nil {
-		log.Fatalln(err.Error())
+        return err
 	}
+    return nil
 }
 
-func handleLayers(manifest DockerManifest, imageData []string, token interface{}, tempDir string) {
+func handleLayers(manifest *DockerManifest, imageData []string, token string, tempDir string) error {
 	client := &http.Client{}
 	for n, layer := range manifest.Layers {
 		downloadUrl := fmt.Sprintf(layerUrl, imageData[0], layer.Digest)
 		req, err := http.NewRequest("GET", downloadUrl, nil)
 		if err != nil {
-			log.Fatalf(err.Error())
+            return err
 		}
-		req.Header.Add("Authorization", "Bearer "+token.(string))
+		req.Header.Add("Authorization", "Bearer "+token)
 		req.Header.Add("Accept", "application/vnd.docker.distribution.manifest.v2+json")
 
 		resp, err := client.Do(req)
 		if err != nil {
-			log.Fatalf(err.Error())
+            return err
 		}
 		tarFile, err := createFile(n, resp.Body)
 		if err != nil {
-			log.Fatalf(err.Error())
+            return err
 		}
-		extractTar(tarFile.Name(), tempDir)
+		err = extractTar(tarFile.Name(), tempDir)
+        if err != nil {
+            return err
+        }
 	}
+    return nil
+}
+
+func getToken(repo string) (string, error) {
+	resp, err := http.Get(fmt.Sprintf(authUrl, repo))
+    if err != nil {
+        return "", err
+    }
+
+	var result map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&result)
+    if err != nil {
+        return "", err
+    }
+	token := result["token"].(string)
+
+    return token, nil
+}
+
+func getDockerManifest(repo, version, token string) (*DockerManifest, error) {
+    client := &http.Client{}
+    url := fmt.Sprintf(manifestUrl, repo, version)
+
+	req, err := http.NewRequest("GET", url, nil)
+	req.Header.Add("Authorization", "Bearer "+token)
+	req.Header.Add("Accept", "application/vnd.docker.distribution.manifest.v2+json")
+
+    resp, err := client.Do(req)
+    if err != nil {
+        return nil, err
+    }
+
+	body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return nil, err 
+    }
+
+	var manifest DockerManifest
+	err = json.Unmarshal(body, &manifest)
+    if err != nil {
+        return nil, err 
+    }
+    
+    log.Println(manifest)
+
+    return &manifest, nil
 }
 
 // Usage: your_docker.sh run <image> <command> <arg1> <arg2> ...
@@ -141,49 +177,50 @@ func main() {
 		imageData[1] = "latest"
 	}
 	imageData[0] = strings.Split(image, ":")[0]
+    token, err := getToken(imageData[0])
+    if err != nil {
+        log.Fatalln(err.Error())
+    }
 
-	resp, err := http.Get(fmt.Sprintf(authUrl, imageData[0]))
-
-	// i should type a struct for this but i am too lazy 
-	var result map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&result)
-	token := result["token"]
-
-	client := &http.Client{}
-	url := fmt.Sprintf(manifestUrl, imageData[0], imageData[1])
-
-	req, err := http.NewRequest("GET", url, nil)
-	req.Header.Add("Authorization", "Bearer "+token.(string))
-	req.Header.Add("Accept", "application/vnd.docker.distribution.manifest.v2+json")
-
-	resp, err = client.Do(req)
-	body, err := io.ReadAll(resp.Body)
-	var manifest DockerManifest
-	json.Unmarshal(body, &manifest)
 
 	tempDir, err := os.MkdirTemp("", "sandbox")
 	if err != nil {
-		log.Fatalln(":(", err.Error())
+		log.Fatalln(err.Error())
 	}
-    handleLayers(manifest, imageData, token, tempDir)
+
+    manifest, err := getDockerManifest(imageData[0], imageData[1], token)
+    if err != nil {
+        log.Fatalln(err.Error())
+    }
+    log.Println(manifest)
+    err = handleLayers(manifest, imageData, token, tempDir)
+    if err != nil {
+        log.Fatalln(err.Error())
+    }
 
 	err = syscall.Chroot(tempDir)
 	if err != nil {
-		log.Fatalln(":(", err.Error())
+		log.Fatalln(err.Error())
 	}
 
 	err = os.Chdir("/")
 	if err != nil {
-		log.Fatalln(":(", err.Error())
+		log.Fatalln(err.Error())
 	}
 
 	err = os.Mkdir("/dev", 0755)
+    if err != nil {
+        log.Fatalln(err.Error())
+    }
 
 	devNull, err := os.Create("/dev/null")
 	if err != nil {
-		log.Fatalln(":(", err.Error())
+		log.Fatalln(err.Error())
 	}
-	devNull.Close()
+	err = devNull.Close()
+    if err != nil {
+        log.Fatalln(err.Error())
+    }
 
 	cmd := exec.Command(command, args...)
 
@@ -200,8 +237,6 @@ func main() {
 			returnCode := exitError.ExitCode()
 			os.Exit(returnCode)
 		}
-		log.Println("Exited", err.Error())
-
-		os.Exit(1)
+		log.Fatalln("Exited", err.Error())
 	}
 }
